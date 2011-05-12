@@ -17,5 +17,13 @@ Milestone 3:
 ## Immediate goals
 
 1. Audit, organize code
+
+   - introduce structs
+   - remove "series" code
+   - introduce brute-force search
+   - move to typed racket
+   - use for/list
+   - pull out test cases we know can be handled
+
 2. Finish front end work (support full grammar, delegate as needed)
 3. See what happens with Racket test suite, both for correctness and performance

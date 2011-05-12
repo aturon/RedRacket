@@ -21,7 +21,6 @@
       (printf "~s~n" dfa-in)
       (syntax->datum (dfa-expand (build-test-dfa dfa-in) end*?)))))
 
-
 ;; The macro for user level
 (define-syntax (dfa-match? stx)
   (syntax-case stx ()
@@ -33,9 +32,6 @@
             (dfa-expand (build-test-dfa dfa-in) end*?)))])
       #'(dfa-matcher string))]))
 
-
-
-
 ;;Example tests
 (equal? (dfa-match? "a+" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") #t)
 (equal? (dfa-match? "c(a|d)*r" "caadadadaddaadadadadadadddddaaaaar") #t)
@@ -43,7 +39,3 @@
 (equal? (dfa-match? "schwers\\.r@gmail\\.com" "schwers.r@gmail.com") #t)
 (equal? (dfa-match? "(node\\.js|ruby)" "node.jsasdf") #t)
 (equal? (dfa-match? "(red|racket)(red|racket)" "redracket") #t)
-
-
-
-

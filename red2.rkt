@@ -20,15 +20,16 @@
 (define (id x) x)
 
 (define (make-temps n) (list->vector (generate-temporaries (build-list n id))))
-(define (one-temp) (vector-ref (make-temps 1) 0))
 
-(define fast-stop? #f)
+(define fast-stop? #f)  ;---at--- this variable is set!-ed depending
+			; on the regular expression (probably to avoid
+			; passing around additional parameters)
 (define char-min 0)
 (define char-max 1114111)
-(define series-max 12)
+(define series-max 12)  ;---at--- appears to be unused
 (define (dispatched x) (integer->char x))
 
-  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; From Deriv-Racket
 ;; (make-dfa num-states start-state final-states/actions transitions)
 ;;  where num-states, start-states are int
@@ -42,36 +43,45 @@
 ;;    when we try to run the 'dfa' family of functions
 ;; (: clean-trans ((Listof transitions) -> (Listof transitions)))
 (define (clean-trans trans num)
-  (let loop ([lot trans] [n 0] [acc null])
-    (cond [(and (null? lot) (eq? n num)) (reverse acc)]
+  (let loop ([lot trans] 
+	     [n 0] 
+	     [acc null])
+    (cond [(and (null? lot) (eq? n num)) 
+	   (reverse acc)]
           [(and (not (null? lot)) (eq? n (caar lot)))
            (loop (cdr lot) (add1 n) (cons (car lot) acc))]
-          [(empty? lot) (loop lot (add1 n) (cons (cons n null) acc))]
-          [else (loop (cdr lot) (add1 n) (cons (cons n null)) acc)])))
+          [(empty? lot) 
+	   (loop lot (add1 n) (cons (cons n null) acc))]
+          [else 
+	   (loop (cdr lot) (add1 n) (cons (cons n null)) acc)])))
 
-
+;---at--- produces code for an always-accepting state
 ;; (: quick-accpet (temporary -> SYNTAX))
-(define (quick-accept x) (with-syntax ([src x]) #'[src (lambda (i) #t)]))
+(define (quick-accept src) #`[#,src (lambda (i) #t)])
 
-
+;---at--- produces code for a general state of the machine
 ;; (: trans-expand (Temporaryx3 Boolean
 ;;      (List Natural (listof (Pair integer-set Nubmer))) (Vector temporaries)) -> SYNTAX))
 (define (trans-expand* state string length final? tlist ids)
   (if (and final? fast-stop?)
       (quick-accept state)
-      (with-syntax ([base-case final?] [src state]
-                    [dispatch (dispatch-on state final? (make-rmps (cdr tlist) ids))]
-                    [len length] [str string])
-                   #'[src (lambda (i)
-                            (if (unsafe-fx= i len) base-case
-                                (let ([n (unsafe-string-ref str i)])
-                                  dispatch)))])))
+      (with-syntax ([base-case final?] 
+		    [src state]
+		    ;---at--- why (cdr tlist) here?
+                    [dispatch (dispatch-on state final? (make-rmps (cdr tlist) ids))] 
+                    [len length] 
+		    [str string])
+	#'[src (lambda (i)
+		 (if (unsafe-fx= i len) 
+		     base-case
+		     (let ([n (unsafe-string-ref str i)])
+		       dispatch)))])))
 
+;---at--- curries some of the arguments to trans-expand*
 ;; (: trans-helper (Temprorary Temporary ->
 ;;    (Temporary Boolean (List (Natural (Listof (Pair integer-set Number)))) -> SYNTAX)))
 (define (trans-helper string length ids)
   (lambda (state final? tlist) (trans-expand* state string length final? tlist ids)))
-
 
 ;; (: make-rmps ((Listof (Pair integer-set Number)) (Vector temporaries) -> SYNTAX))
 (define (make-rmps edges-list ids)
@@ -98,21 +108,27 @@
         [(range? A) (range-hi A)]
         [else (error 'range-max "expected a range, given ~s" A)]))
 
+;---at--- compares ranges based on their starting point
 ;; (: range<= (Range Range -> Boolean))
 (define (range<= A B) (<= (range-min A) (range-min B)))
 
+;---at--- smart constructor for ranges; notices singletons
 ;; (: build-range ((Pair Number Number) -> Range
 (define (build-range pair)
-  (let ([a (car pair)] [b (cdr pair)])
+  (let ([a (car pair)] 
+	[b (cdr pair)])
     (cond [(= a b) (make-singleton a)]
           [(< a b) (make-range a b)]
           [else (error 'build-range "expected ~s < ~s" a b)])))
 
+;---at--- aka (map (lambda (p) (cons (build-range p) dest)) pairs)
 ;; (: to-ranges ((Listof (Pair Number Number)) temporary) -> (Listof RangeMapping))
 (define (to-ranges pairs dest)
-  (if (null? pairs) (error 'to-ranges "Given an empty series to turn to ranges")
+  (if (null? pairs) 
+      (error 'to-ranges "Given an empty series to turn to ranges")
       (let loop ([lon pairs] [acc null])
-        (if (null? lon) (reverse acc)
+        (if (null? lon) 
+	    (reverse acc)
             (loop (cdr lon) (cons (cons (build-range (car lon)) dest) acc))))))
 
 ;; (: merge-ranges-dests ((Listof RangeMapping) (Listof RangeMapping) -> (Listof RangeMapping)))
@@ -143,11 +159,19 @@
 ;; (: staying-here? ((Listof RangeMapping) Temporary -> Boolena))
 (define (staying-here? rmaps id) (andmap (lambda (pair) (same-id? (cdr pair id))) rmaps))
 
+;---at--- asks if rmaps 
+;  (1) covers the full spectrum of characters
+;  (2) breaks into three segments, the middle one being a singleton
+;  (3) maps the two outer segments to id
 ;; (: loop-until-x? ((Listof RangeMapping) Temporary -> Boolean))
 (define (loop-until-x? rmaps id)
   (and (= 3 (length rmaps))
-       (let ([a (car rmaps)] [b (cadr rmaps)] [c (caddr rmaps)])
-         (let ([ra (car a)] [rb (car b)] [rc (car c)])
+       (let ([a (car rmaps)] 
+	     [b (cadr rmaps)] 
+	     [c (caddr rmaps)])
+         (let ([ra (car a)] 
+	       [rb (car b)] 
+	       [rc (car c)])
            (and (singleton? rb)
                 (= char-min (range-min ra))
                 (= char-max (range-max rb))
@@ -157,17 +181,18 @@
                 (same-id? (cdr a) id)
                 (same-id? (cdr c) id))))))
 
+;---at--- build a loop looking for a single, specific character in the input
 ;; (: build-.*-loop ((Listof RangeMapping) Temporary -> SYNTAX))
 (define (build-.*-loop rmaps id)
   (let ([outmap (cadr rmaps)])
-    (unless (singleton? outmap) (error 'build-.*-loop "expected a singletoin"))
-    (with-syntax ([dest (cdr rmaps)]
+    (unless (singleton? outmap) (error 'build-.*-loop "expected a singleton"))
+    (with-syntax ([dest (cdr rmaps)]  ;---at--- (cdr rmaps) looks like a type error
                   [num (dispatched (singleton-val outmap))]
                   [this id]
                   [next #'(unsafe-fx+ i 1)])
-                 #'(if (unsafe-fx= n num)
-                       (dest next)
-                       (this next)))))
+      #'(if (unsafe-fx= n num)
+	    (dest next)
+	    (this next)))))
 
 ;; (: series? ((Listof RangeMapping) -> Boolean))
 (define (series? rmaps)
@@ -198,21 +223,25 @@
   (define (build-branches rmaps acc)
     (define (two-in-a-row?) (singleton? (caadr rmaps)))
     (let ([next (with-syntax ([val (dispatched (range-min (caar rmaps)))]
-                              [dest (cdar rmaps)] [base acc])
-                             #'(if (unsafe-fx= n val) (dest (unsafe-fx+ i 1)) base))])
-      (if (null? (cddr rmaps)) next
+                              [dest (cdar rmaps)] 
+			      [base acc])
+		  #'(if (unsafe-fx= n val) (dest (unsafe-fx+ i 1)) base))])
+      (if (null? (cddr rmaps))
+	  next
           (if (two-in-a-row?)
               (build-branches (cdr rmaps) next)
               (build-branches (cddr rmaps) next)))))
   (build-branches (cdr rmaps)
-                  (with-syntax ([dest (cdar rmaps)]) #'(dest (unsafe-fx+ i 1)))))
+                  (with-syntax ([dest (cdar rmaps)]) ;---at--- the fall-through case
+		    #'(dest (unsafe-fx+ i 1)))))
 
-
+;---at--- use split-at
 ;; (: list-rmaps->partition ((Listof RangeMapping) Number)
 ;;       -> (Pair (Listof RangeMapping) (Listof RangeMapping)))
 (define (list-rmaps->partitions rmaps part)
   (let loop ([rmaps rmaps] [acc null])
-    (if (null? rmaps) (cons (reverse acc) null)
+    (if (null? rmaps) 
+	(cons (reverse acc) null)
         (let ([start (range-min (caar rmaps))])
           (cond [(< start part) (loop (cdr rmaps) (cons (car rmaps) acc))]
                 [(= start part) (loop (cdr rmaps) acc)]
@@ -220,66 +249,64 @@
 
 ;; (: build-bst ((Listof RangeMapping) -> SYNTAX))
 (define (build-bst rmaps)
-  (let* ([part-ref (unsafe-fxquotient (length rmaps) 2)]
-         [part (list-ref rmaps part-ref)]
-         [low (range-min (car part))]
-         [hi (range-max (car part))]
-         [going (cdr part)]
-         [pair-parts (list-rmaps->partitions rmaps low)]
-         [less (car pair-parts)] [more (cdr pair-parts)])
-    (with-syntax ([dest going] [l (dispatched low)] [h (dispatched hi)]
-                  [next #'(unsafe-fx+ i 1)])
-       (with-syntax ([this-range
-                                (if (singleton? (car part))
-                                    #'(and (unsafe-fx= n l) (dest next))
-                                    #'(and (unsafe-fx<= n h)
-                                           (unsafe-fx>= n l)
-                                           (dest next)))])
-         (cond [(and (null? less) (null? more)) #'this-range]
-               [(null? less)
-                (with-syntax ([upper-range (build-bst more)])
-                             #'(if (unsafe-fx> n h) upper-range this-range))]
-               [(null? more)
-                (with-syntax ([lower-range (build-bst less)])
-                             #'(if (unsafe-fx< n l) lower-range this-range))]
-               [else
-                (with-syntax ([upper-range (build-bst more)]
-                              [lower-range (build-bst less)])
-                             #'(if (unsafe-fx> n h)
-                                   upper-range
-                                   (if (unsafe-fx< n l)
-                                       lower-range
-                                       (dest next))))])))))
+  (match-let* ([part-ref (quotient (length rmaps) 2)]  
+	       [(cons (range low hi) going) (list-ref rmaps part-ref)]
+	       [(cons less more) (list-rmaps->partitions rmaps low)])
+    (with-syntax* ([dest going] 
+		   [l (dispatched low)] 
+		   [h (dispatched hi)]
+		   [next #'(unsafe-fx+ i 1)]
+		   [this-range
+		      (if (singleton? (car part))
+			  #'(and (unsafe-fx= n l) (dest next))
+			  #'(and (unsafe-fx<= n h)
+				 (unsafe-fx>= n l)
+				 (dest next)))])
+	 (match* (less more)
+	   [('() '()) #'this-range]
+	   [('() _)   #`(if (unsafe-fx> n h) #,(build-bst more) this-range)]
+	   [(_   '()) #`(if (unsafe-fx< n l) #,(build-bst less) this-range)]
+	   [(_   _)   #`(cond [(unsafe-fx> n h) #,(build-bst more)]
+			      [(unsafe-fx< n l) #,(build-bst less)]
+			      [else (dest next)])]))))
+		
 
 (define (make-finals finals num)
-  (let loop ([finals finals] [nums (build-list num id)] [acc null])
-    (cond [(null? nums) (list->vector (reverse acc))]
-          [(null? finals) (loop null (cdr nums) (cons #f acc))]
-          [(< (caar finals) (car nums)) (loop (cdr finals) nums acc)]
-          [(= (caar finals) (car nums)) (loop (cdr finals) (cdr nums) (cons #t acc))]
-          [else (loop finals (cdr nums) (cons #f acc))])))
+  (let loop ([finals finals] 
+	     [nums (build-list num id)] 
+	     [acc null])
+    (cond [(null? nums) 
+	   (list->vector (reverse acc))]
+          [(null? finals) 
+	   (loop null (cdr nums) (cons #f acc))]
+          [(< (caar finals) (car nums)) 
+	   (loop (cdr finals) nums acc)]
+          [(= (caar finals) (car nums)) 
+	   (loop (cdr finals) (cdr nums) (cons #t acc))]
+          [else 
+	   (loop finals (cdr nums) (cons #f acc))])))
 
 ;; (: dfa-expand (dfa -> SYNTAX))
 (define (dfa-expand in end*?)
   (unless (dfa? in) (error 'dfa-epxand "expected a dfa given: ~s" in))
-  (if end*? (set! fast-stop? #t) #t)
+  (when end*? (set! fast-stop? #t))
   (let* ([num (dfa-num-states in)]
          [init (dfa-start-state in)]
-         [string* (one-temp)]
-         [strlen* (one-temp)]
+         [string* (generate-temporary)]  
+         [strlen* (generate-temporary)]
          [state-ids (make-temps num)]
          [transitions (clean-trans (dfa-transitions in) num)]
          [id-of (lambda (x) (vector-ref state-ids x))]
          [trans-expand (trans-helper string* strlen* state-ids)]
          [finals (make-finals (dfa-final-states/actions in) num)]
-         [0tonums (build-list num id)]
-         )
+         [0tonums (build-list num id)])
     (with-syntax ([(nodes ...)
                    (map trans-expand
                         (map id-of 0tonums)
                         (map (lambda (x) (vector-ref finals x)) 0tonums)
                         transitions)]
-                  [n strlen*] [string string*]
+                  [n strlen*] 
+		  [string string*]
                   [start (id-of init)])
       #'(lambda (string)
           (let ([n (unsafe-string-length string)])
