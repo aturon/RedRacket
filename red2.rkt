@@ -94,8 +94,8 @@
 (define (merge tlist1 tlist2)
   (define (merge-acc tl1 tl2 acc)
     (match* (tl1 tl2)
-      [('() _) (append (reverse tl2) acc)]
-      [(_ '()) (append (reverse tl1) acc)]
+      [('() _) (append (reverse acc) tl1)]
+      [(_ '()) (append (reverse acc) tl2)]
       [((cons e1 tl1') (cons e2 tl2'))
        (if (< (range-low (edge-rng e1)) (range-low (edge-rng e2)))
 	   (merge-acc tl1' tl2 (cons e1 acc))
