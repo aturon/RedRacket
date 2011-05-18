@@ -1,5 +1,1 @@
-Attempt to improve regular expression matching perfomance
-by use of Regular Expression Derivatives and pre-compilation.
-
-Looking to add more tests and delve into more optimizations.
-
+A Racket implementation of regexp matching using macros and regexp derivatives.
