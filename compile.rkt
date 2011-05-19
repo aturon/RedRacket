@@ -5,10 +5,12 @@
          parser-tools/private-lex/util
          (prefix-in mz: mzlib/integer-set)
          racket/unsafe/ops
+         unstable/syntax
+         "fancy-app.rkt"
          (for-syntax racket
                      racket/unsafe/ops
                      (prefix-in mz: mzlib/integer-set))
-         (for-template racket
+         (for-template racket/base
                        racket/unsafe/ops))
 
 (provide (combine-out compile-dfa build-test-dfa
@@ -19,12 +21,12 @@
 ;; INTERNAL REPRESENTATION OF DFA STATES: A VECTOR OF STATE STRUCTS
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define-struct state (name [final? #:mutable] [edges #:mutable]))
+(struct state (name [final? #:mutable] [edges #:mutable]))
 ;; where name : syntax?, final? : boolean?, transitions : (list-of edge?)
 
-(define-struct edge (range))		;; where range : (cons-of number? number?)
-(define-struct error-edge edge ())
-(define-struct trans-edge edge (goto))	;; where goto : state
+(struct edge (range))		;; where range : (cons-of number? number?)
+(struct error-edge edge ())
+(struct trans-edge edge (goto))	;; where goto : state
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; CONVERSION FROM DERIV'S DFA REPRESENTATION TO OURS:
@@ -48,10 +50,10 @@
     (match* (el1 el2)
       [('() _) (append (reverse acc) el1)]
       [(_ '()) (append (reverse acc) el2)]
-      [((cons e1 el1') (cons e2 el2'))
+      [((cons e1 el1-rest) (cons e2 el2-rest))
        (if (< (car (edge-range e1)) (car (edge-range e2)))
-	   (merge-acc el1' el2 (cons e1 acc))
-	   (merge-acc el1 el2' (cons e2 acc)))]))
+	   (merge-acc el1-rest el2 (cons e1 acc))
+	   (merge-acc el1 el2-rest (cons e2 acc)))]))
   (merge-acc elist1 elist2 '()))
 
 ;; Converts representation of transitions from deriv's (which uses a
@@ -80,11 +82,11 @@
   (let ([states (for/vector ([i (in-range (dfa-num-states dfa))])
 		  (state (generate-temporary (format "state-~a" i)) #f '()))])
     (for ([t (in-list (dfa-transitions dfa))])
-      (set-state-transitions (vector-ref (transition-state-id t))
-			     (transitions->edges states (transition-list t))))
+      (set-state-edges! (vector-ref (transition-state-id t))
+                        (transitions->edges states (transition-list t))))
     (for ([f (in-list (dfa-final-states/actions dfa))])
-      (set-state-final? (vector-ref states (final-state-id f) #t)))
-    states)
+      (set-state-final?! (vector-ref states (final-state-id f) #t)))
+    states))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; DFA COMPILATION
@@ -94,21 +96,21 @@
 ;; template time) char-stx is bound to the character read and pos-stx
 ;; is bound to the current position
 (define (compile-dispatch edges char-stx pos-stx)
-  (with-synax ([char char-stx] [pos pos-stx])
+  (with-syntax ([char char-stx] [pos pos-stx])
     (define (dispatch-stx edges)
       (if (< (length edges) 10) (scan-stx edges) (binary-search-stx edges)))
     (define (binary-search-stx edges)   ; precondition: (> (length edges) 2)
       (let-values ([(edges-low edges-high) 
-		    (split-at edges (quotient (length edges) 2))]
-		   [(boundary) (car (edge-range (car edges-high)))])
-	#`(if (unsafe-fx< char #,boundary)
-	      #,(dispatch-stx edges-low)
-	      #,(dispatch-stx edges-high))))
+                     (split-at edges (quotient (length edges) 2))])
+        (let ([boundary (car (edge-range (car edges-high)))])
+          #`(if (unsafe-fx< char #,boundary)
+                #,(dispatch-stx edges-low)
+                #,(dispatch-stx edges-high)))))
     (define (scan-stx edges)     ; precondition: (> (length edges) 0)
       (define (boundary-check-stx edge)
 	#`(unsafe-fx<= char #,(cdr (edge-range edge))))
       (define (body-stx edge)
-	(match edge ([(trans-edge _ goto) #`(#,goto (unsafe-fx+ 1 pos))]
+	(match edge ([(trans-edge z goto) #`(#,goto (unsafe-fx+ 1 pos))]
 		     [(error-edge _)      #'#f])))
       ; todo: replace final boundary-check with `else'
       (with-syntax ([(boundary-check ...) (map boundary-check-stx edges)]
