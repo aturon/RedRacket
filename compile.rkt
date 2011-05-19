@@ -11,7 +11,7 @@
          (for-template racket
                        racket/unsafe/ops))
 
-(provide (combine-out dfa-expand build-test-dfa
+(provide (combine-out compile-dfa build-test-dfa
                       (all-from-out parser-tools/private-lex/re)
                       (all-from-out parser-tools/private-lex/deriv)))
 
@@ -23,55 +23,6 @@
 (define-struct edge (range))		;; where range : (cons-of number? number?)
 (define-struct error-edge edge ())
 (define-struct trans-edge edge (goto))	;; where goto : state
-
-(define (trans-expand input-string-stx input-len-stx end*? st)
-  (match-let ([(state name-stx final? transitions) st]
-	      [pos-stx  (generate-temporary 'pos)]
-	      [char-stx (generate-temporary 'char)])
-    (with-syntax ([name         name-stx]
-		  [input-string input-string-stx]
-		  [input-len    input-len-stx]
-		  [pos          pos-stx]
-		  [char         char-stx]
-		  [fall-thru    final?])
-      #`[name (lambda (pos) 
-		#,(if (and final? end*?) 
-		      #'#t 
-		      (dispatch ...)))])))
-
-;; (: dispatch-one (temporary boolean (Listof RangeMapping) -> SYNTAX))
-(define (dispatch-one state final? rmaps)
-  (if (null? rmaps) final?
-      (if (and final? (or fast-stop? (staying-here? rmaps state)))
-          #f
-	  (build-bst rmaps))))
-
-;; (: staying-here? ((Listof RangeMapping) Temporary -> Boolena))
-(define (staying-here? rmaps id) 
-  (andmap (lambda (pair) (bound-identifier=? (cdr pair id))) rmaps))
-
-;; (: build-bst ((Listof RangeMapping) -> SYNTAX))
-(define (build-bst rmaps)
-  (match-let* ([part-ref (quotient (length rmaps) 2)]  
-	       [(cons (range low hi) going) (list-ref rmaps part-ref)]
-	       [(cons less more) (list-rmaps->partitions rmaps low)])
-    (with-syntax* ([dest going] 
-		   [l (dispatched low)] 
-		   [h (dispatched hi)]
-		   [next #'(unsafe-fx+ i 1)]
-		   [this-range
-		      (if (singleton? (car part))
-			  #'(and (unsafe-fx= n l) (dest next))
-			  #'(and (unsafe-fx<= n h)
-				 (unsafe-fx>= n l)
-				 (dest next)))])
-	 (match* (less more)
-	   [('() '()) #'this-range]
-	   [('() _)   #`(if (unsafe-fx> n h) #,(build-bst more) this-range)]
-	   [(_   '()) #`(if (unsafe-fx< n l) #,(build-bst less) this-range)]
-	   [(_   _)   #`(cond [(unsafe-fx> n h) #,(build-bst more)]
-			      [(unsafe-fx< n l) #,(build-bst less)]
-			      [else (dest next)])]))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; From Deriv-Racket
@@ -136,8 +87,47 @@
 
     states)
 
-;; (: dfa-expand (dfa -> SYNTAX))
-(define (dfa-expand dfa end*?)
+(define (compile-state input-string-stx input-len-stx end*? st)
+  (match-let ([(state name-stx final? edges) st]
+	      [char-stx (generate-temporary 'char)]
+	      [pos-stx  (generate-temporary 'pos)])
+    (with-syntax ([name         name-stx]
+		  [input-string input-string-stx]
+		  [input-len    input-len-stx]
+		  [char         char-stx]
+		  [pos		pos-stx])
+      (if (and final? end*?)
+	  #'[name (lambda (pos) #t)]
+	  #`[name (lambda (pos)
+		    (if (unsafe-fx= pos input-len)
+			#,final?
+			(let ([char (unsafe-string-ref input-string pos)])
+			  #,(compile-dispatch final? edges char-stx pos-stx))))]))))
+
+(define (compile-dispatch final? edges char-stx pos-stx)
+  (match-let* ([part-ref (quotient (length rmaps) 2)]  
+	       [(cons (range low hi) going) (list-ref rmaps part-ref)]
+	       [(cons less more) (list-rmaps->partitions rmaps low)])
+    (with-syntax* ([dest going] 
+		   [l (dispatched low)] 
+		   [h (dispatched hi)]
+		   [next #'(unsafe-fx+ i 1)]
+		   [this-range
+		      (if (singleton? (car part))
+			  #'(and (unsafe-fx= n l) (dest next))
+			  #'(and (unsafe-fx<= n h)
+				 (unsafe-fx>= n l)
+				 (dest next)))])
+	 (match* (less more)
+	   [('() '()) #'this-range]
+	   [('() _)   #`(if (unsafe-fx> n h) #,(build-bst more) this-range)]
+	   [(_   '()) #`(if (unsafe-fx< n l) #,(build-bst less) this-range)]
+	   [(_   _)   #`(cond [(unsafe-fx> n h) #,(build-bst more)]
+			      [(unsafe-fx< n l) #,(build-bst less)]
+			      [else (dest next)])]))))
+
+;; (: compile-fa (dfa? boolean? -> SYNTAX))
+(define (compile-dfa dfa end*?)
   (unless (dfa? dfa) (error 'dfa-epxand "expected a dfa given: ~s" dfa))
   (let* ([input-string-stx (generate-temporary 'input-string)]  
          [input-len-stx    (generate-temporary 'input-len)])
@@ -151,7 +141,6 @@
           (let ([input-len (string-length string)])
 	    (letrec (nodes ...)
 	      (start 0)))))))
-
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; For output / testing
