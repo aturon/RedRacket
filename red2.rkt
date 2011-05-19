@@ -20,15 +20,9 @@
 (define-struct state (name [final? #:mutable] [edges #:mutable]))
 ;; where name : syntax?, final? : boolean?, transitions : (list-of edge?)
 
-(define-struct range (from to))
-;; where from, to : number
-
-(define-struct edge (rng))
-;; where rng : range
-
+(define-struct edge (range))		;; where range : (cons-of number? number?)
 (define-struct error-edge edge ())
-(define-struct trans-edge edge (goto))
-;; where goto : state
+(define-struct trans-edge edge (goto))	;; where goto : state
 
 (define (trans-expand input-string-stx input-len-stx end*? st)
   (match-let ([(state name-stx final? transitions) st]
@@ -56,18 +50,6 @@
 (define (staying-here? rmaps id) 
   (andmap (lambda (pair) (bound-identifier=? (cdr pair id))) rmaps))
 
-;---at--- use split-at
-;; (: list-rmaps->partition ((Listof RangeMapping) Number)
-;;       -> (Pair (Listof RangeMapping) (Listof RangeMapping)))
-(define (list-rmaps->partitions rmaps part)
-  (let loop ([rmaps rmaps] [acc null])
-    (if (null? rmaps) 
-	(cons (reverse acc) null)
-        (let ([start (range-min (caar rmaps))])
-          (cond [(< start part) (loop (cdr rmaps) (cons (car rmaps) acc))]
-                [(= start part) (loop (cdr rmaps) acc)]
-                [else (cons (reverse acc) rmaps)])))))
-
 ;; (: build-bst ((Listof RangeMapping) -> SYNTAX))
 (define (build-bst rmaps)
   (match-let* ([part-ref (quotient (length rmaps) 2)]  
@@ -91,17 +73,6 @@
 			      [(unsafe-fx< n l) #,(build-bst less)]
 			      [else (dest next)])]))))
 
-(define (merge tlist1 tlist2)
-  (define (merge-acc tl1 tl2 acc)
-    (match* (tl1 tl2)
-      [('() _) (append (reverse acc) tl1)]
-      [(_ '()) (append (reverse acc) tl2)]
-      [((cons e1 tl1') (cons e2 tl2'))
-       (if (< (range-low (edge-rng e1)) (range-low (edge-rng e2)))
-	   (merge-acc tl1' tl2 (cons e1 acc))
-	   (merge-acc tl1 tl2' (cons e2 acc)))]))
-  (merge-acc tlist1 tlist2 '()))
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; From Deriv-Racket
 ;; (make-dfa num-states start-state final-states/actions transitions)
@@ -110,47 +81,60 @@
 ;;  transitions is (list-of (cons int (list-of (cons char-set int))))
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;; "accessor" functions for data structures used by deriv
+(define transition-state-id car)
+(define transition-list cdr)
+(define final-state-id car)
+
+;; Combines two lists of edges, assuming that (1) they are disjoint
+;; and (2) each list is sorted
+(define (merge elist1 elist2)
+  (define (merge-acc el1 el2 acc)
+    (match* (el1 el2)
+      [('() _) (append (reverse acc) el1)]
+      [(_ '()) (append (reverse acc) el2)]
+      [((cons e1 el1') (cons e2 el2'))
+       (if (< (car (edge-range e1)) (car (edge-range e2)))
+	   (merge-acc el1' el2 (cons e1 acc))
+	   (merge-acc el1 el2' (cons e2 acc)))]))
+  (merge-acc elist1 elist2 '()))
+
+;; Converts representation of transitions from deriv's (which uses a
+;; list of charsets) to ours (a flattened list of edges), given a
+;; state vector `states'
+(define (transitions->edges states transitions)
+  (let-values 
+      ([(good-chars edge-list) 
+	(for/fold ([good-chars (mz:make-range)]
+		   [edge-list  '()])
+	          ([transition (in-list transitions)])
+	  (match-let ([(cons char-set goto-state-id) transition])
+	    (values (mz:union good-chars char-set)
+		    (merge (map (trans-edge _ (vector-ref states goto-state-id))
+				(mz:integer-set-contents char-set))
+			   edge-list))))])
+    (merge (map error-edge (mz:integer-set-contents (mz:complement good-chars)))
+	   edge-list)))
+
 ;; Transforms the dfa representation (which has lists of transitions
 ;; and actions indexed by state id) to a flat vector of state
 ;; structures, each containing all information relevant to a state.
 
 ;; collate-states : dfa? -> (vector-of state?)  
 (define (collate-states dfa)
-  (let* ([states (for/vector ([i (in-range (dfa-num-states dfa))])
-  		   (state (generate-temporary (string-append "state-" (number->string i)))
-			  #f 
-			  '()))]
-	 [flatten 
-	  (lambda (transitions)
-	    (for/fold ([good-chars (mz:make-range)]
-		       [flattened  '()])
-		      ([transition (in-list transitions)])
-	      (match-let ([(cons char-set goto-state-id) transition])
-		(values (mz:union good-chars char-set)
-			(merge (map (lambda (rng)
-				      (trans-edge (range (car rng) (cdr rng))
-						  (vector-ref states goto-state-id)))
-				    (mz:integer-set-contents char-set))
-			       flattened)))))]
-	 [transtions->edges 
-	  (lambda (transitions)
-	    (let-values ([(good-chars edge-list)] (flatten transitions))
-	      (merge (map (lambda (rng) (error-edge (range (car rng) (cdr rng))))
-			  (mz:integer-set-contents (mz:complement good-chars)))
-		     edge-list)))])
+  (let ([states (for/vector ([i (in-range (dfa-num-states dfa))])
+		  (state (generate-temporary (format "state-~a" i)) #f '()))])
 
-    ; load in the dfa's transitions to each state, via mutation
-    (for-each (match-lambda [(cons state-id transitions) 
-			     (set-state-transitions (vector-ref state-id)
-						    (transitions->edges transitions))])
-	      (dfa-transitions dfa))
+    ; load the dfa's transitions into each state, via mutation
+    (for ([t (in-list (dfa-transitions dfa))])
+       (set-state-transitions (vector-ref (transition-state-id t))
+			      (transitions->edges states (transition-list t))))
 
     ; record the dfa's final states, again via mutation
-    (for-each (match-lambda [(cons state-id _) 
-			     (set-state-final? (vector-ref states state-id) #t)]) 
-	      (dfa-final-states/actions dfa))
+    (for ([f (in-list (dfa-final-states/actions dfa))])
+      (set-state-final? (vector-ref states (final-state-id f) #t)))
 
-    states))
+    states)
 
 ;; (: dfa-expand (dfa -> SYNTAX))
 (define (dfa-expand dfa end*?)
