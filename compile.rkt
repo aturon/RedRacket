@@ -15,7 +15,9 @@
                       (all-from-out parser-tools/private-lex/re)
                       (all-from-out parser-tools/private-lex/deriv)))
 
-(define (dispatched x) (integer->char x))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; INTERNAL REPRESENTATION OF DFA STATES: A VECTOR OF STATE STRUCTS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define-struct state (name [final? #:mutable] [edges #:mutable]))
 ;; where name : syntax?, final? : boolean?, transitions : (list-of edge?)
@@ -25,11 +27,13 @@
 (define-struct trans-edge edge (goto))	;; where goto : state
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; From Deriv-Racket
-;; (make-dfa num-states start-state final-states/actions transitions)
-;;  where num-states, start-states are int
-;;  final-states/actions is (list-of (cons int syntax-object))
-;;  transitions is (list-of (cons int (list-of (cons char-set int))))
+;; CONVERSION FROM DERIV'S DFA REPRESENTATION TO OURS:
+;;
+;; deriv's representation is:
+;;   (make-dfa num-states start-state final-states/actions transitions)
+;;    where num-states, start-states are int
+;;    final-states/actions is (list-of (cons int syntax-object))
+;;    transitions is (list-of (cons int (list-of (cons char-set int))))
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;; "accessor" functions for data structures used by deriv
@@ -37,8 +41,8 @@
 (define transition-list cdr)
 (define final-state-id car)
 
-;; Combines two lists of edges, assuming that (1) they are disjoint
-;; and (2) each list is sorted
+;; Combines two (lists-of edge?), assuming that (1) they are disjoint
+;; and (2) each list is sorted, returning a sorted list
 (define (merge elist1 elist2)
   (define (merge-acc el1 el2 acc)
     (match* (el1 el2)
@@ -71,22 +75,49 @@
 ;; and actions indexed by state id) to a flat vector of state
 ;; structures, each containing all information relevant to a state.
 
-;; collate-states : dfa? -> (vector-of state?)  
+;; collate-states : (dfa? -> (vector-of state?))
 (define (collate-states dfa)
   (let ([states (for/vector ([i (in-range (dfa-num-states dfa))])
 		  (state (generate-temporary (format "state-~a" i)) #f '()))])
-
-    ; load the dfa's transitions into each state, via mutation
     (for ([t (in-list (dfa-transitions dfa))])
-       (set-state-transitions (vector-ref (transition-state-id t))
-			      (transitions->edges states (transition-list t))))
-
-    ; record the dfa's final states, again via mutation
+      (set-state-transitions (vector-ref (transition-state-id t))
+			     (transitions->edges states (transition-list t))))
     (for ([f (in-list (dfa-final-states/actions dfa))])
       (set-state-final? (vector-ref states (final-state-id f) #t)))
-
     states)
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; DFA COMPILATION
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; produces syntax for dispatching a list of edges, given that (at
+;; template time) char-stx is bound to the character read and pos-stx
+;; is bound to the current position
+(define (compile-dispatch edges char-stx pos-stx)
+  (with-synax ([char char-stx] [pos pos-stx])
+    (define (dispatch-stx edges)
+      (if (< (length edges) 10) (scan-stx edges) (binary-search-stx edges)))
+    (define (binary-search-stx edges)   ; precondition: (> (length edges) 2)
+      (let-values ([(edges-low edges-high) 
+		    (split-at edges (quotient (length edges) 2))]
+		   [(boundary) (car (edge-range (car edges-high)))])
+	#`(if (unsafe-fx< char #,boundary)
+	      #,(dispatch-stx edges-low)
+	      #,(dispatch-stx edges-high))))
+    (define (scan-stx edges)     ; precondition: (> (length edges) 0)
+      (define (boundary-check-stx edge)
+	#`(unsafe-fx<= char #,(cdr (edge-range edge))))
+      (define (body-stx edge)
+	(match edge ([(trans-edge _ goto) #`(#,goto (unsafe-fx+ 1 pos))]
+		     [(error-edge _)      #'#f])))
+      ; todo: replace final boundary-check with `else'
+      (with-syntax ([(boundary-check ...) (map boundary-check-stx edges)]
+		    [(body ...)		  (map body-stx edges)])
+	#'(cond ([boundary-check body] ...))))
+    (dispatch-stx edges)))
+
+;; produces syntax for a state, as a letrec clause, assuming that
+;; input-string-stx and input-len-stx are bound at template time
 (define (compile-state input-string-stx input-len-stx end*? st)
   (match-let ([(state name-stx final? edges) st]
 	      [char-stx (generate-temporary 'char)]
@@ -102,41 +133,20 @@
 		    (if (unsafe-fx= pos input-len)
 			#,final?
 			(let ([char (unsafe-string-ref input-string pos)])
-			  #,(compile-dispatch final? edges char-stx pos-stx))))]))))
+			  #,(compile-dispatch edges char-stx pos-stx))))]))))
 
-(define (compile-dispatch final? edges char-stx pos-stx)
-  (match-let* ([part-ref (quotient (length rmaps) 2)]  
-	       [(cons (range low hi) going) (list-ref rmaps part-ref)]
-	       [(cons less more) (list-rmaps->partitions rmaps low)])
-    (with-syntax* ([dest going] 
-		   [l (dispatched low)] 
-		   [h (dispatched hi)]
-		   [next #'(unsafe-fx+ i 1)]
-		   [this-range
-		      (if (singleton? (car part))
-			  #'(and (unsafe-fx= n l) (dest next))
-			  #'(and (unsafe-fx<= n h)
-				 (unsafe-fx>= n l)
-				 (dest next)))])
-	 (match* (less more)
-	   [('() '()) #'this-range]
-	   [('() _)   #`(if (unsafe-fx> n h) #,(build-bst more) this-range)]
-	   [(_   '()) #`(if (unsafe-fx< n l) #,(build-bst less) this-range)]
-	   [(_   _)   #`(cond [(unsafe-fx> n h) #,(build-bst more)]
-			      [(unsafe-fx< n l) #,(build-bst less)]
-			      [else (dest next)])]))))
-
-;; (: compile-fa (dfa? boolean? -> SYNTAX))
+;; compile-dfa : (dfa? boolean? -> syntax?)
 (define (compile-dfa dfa end*?)
   (unless (dfa? dfa) (error 'dfa-epxand "expected a dfa given: ~s" dfa))
   (let* ([input-string-stx (generate-temporary 'input-string)]  
-         [input-len-stx    (generate-temporary 'input-len)])
+         [input-len-stx    (generate-temporary 'input-len)]
+	 [states	   (collate-states dfa)])
     (with-syntax ([(nodes ...) 
-		   (for/list ([st (in-vector (collate-states dfa))])
-		     (trans-expand input-string-stx input-len-stx end*? st))]
+		   (for/list ([st (in-vector states)])
+		     (compile-state input-string-stx input-len-stx end*? st))]
+		  [start (state-name (vector-ref states (dfa-start-state in)))]
                   [input-string input-string-stx] 
-		  [input-len    input-len-stx]
-                  [start (id-of (dfa-start-state in))])
+		  [input-len    input-len-stx])
       #'(lambda (input-string)
           (let ([input-len (string-length string)])
 	    (letrec (nodes ...)
