@@ -110,7 +110,7 @@
       (define (boundary-check-stx edge)
 	#`(unsafe-fx<= char #,(cdr (edge-range edge))))
       (define (body-stx edge)
-	(match edge ([(trans-edge z goto) #`(#,goto (unsafe-fx+ 1 pos))]
+	(match edge ([(trans-edge _ goto) #`(#,goto (unsafe-fx+ 1 pos))]
 		     [(error-edge _)      #'#f])))
       ; todo: replace final boundary-check with `else'
       (with-syntax ([(boundary-check ...) (map boundary-check-stx edges)]
